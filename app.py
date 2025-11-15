@@ -22,7 +22,13 @@ bot = telebot.TeleBot(BOT1_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
 # ذخیره حالت کاربر
-user_state = {}   # chat_id → dict
+# user_state[chat_id] = {
+#   "symbol", "tp1", "tp2", "tp3", "stop",
+#   "direction", "risk",
+#   "with_image": True/False,
+#   "photo_file_id": "...",
+# }
+user_state = {}
 
 
 # ====== شروع ربات ======
@@ -113,6 +119,42 @@ def ask_risk(chat_id):
     bot.send_message(chat_id, "ریسک را انتخاب کن:", reply_markup=markup)
 
 
+def ask_with_image(chat_id):
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📸 با عکس", callback_data="img:yes"),
+        InlineKeyboardButton("❌ بی‌عکس", callback_data="img:no"),
+    )
+    bot.send_message(chat_id, "سیگنال با عکس بفرستم یا بی‌عکس؟", reply_markup=markup)
+
+
+def ask_photo(chat_id):
+    msg = bot.send_message(chat_id, "حالا عکس سیگنال رو بفرست 📸")
+    bot.register_next_step_handler(msg, process_photo)
+
+
+def process_photo(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    chat_id = message.chat.id
+
+    if not message.photo:
+        # اگر عکس نفرستاد، دوباره بخواهیم
+        msg = bot.send_message(chat_id, "این عکس نبود! لطفاً یک عکس بفرست 📸")
+        bot.register_next_step_handler(msg, process_photo)
+        return
+
+    # بزرگ‌ترین سایز عکس
+    file_id = message.photo[-1].file_id
+    user_state.setdefault(chat_id, {})
+    user_state[chat_id]["photo_file_id"] = file_id
+
+    # حالا مقصد را بپرسیم
+    ask_destination(chat_id)
+
+
 # ====== ساخت کیبورد دکمه‌ای برای نمایش سیگنال ======
 def build_signal_keyboard(data):
     """
@@ -179,12 +221,12 @@ def callbacks(call):
     user_id = call.from_user.id
     data = call.data
 
-    # دکمه‌های نمایشی (x) → هیچ کاری نکن (برای همه مجاز، چون فقط ویو هست)
+    # دکمه‌های نمایشی (x) → هیچ کاری نکن
     if data == "x":
         bot.answer_callback_query(call.id)
         return
 
-    # برای بقیه دکمه‌ها فقط ادمین اجازه دارد
+    # برای همه‌ی دکمه‌های منطقی، فقط ادمین اجازه دارد
     if not is_admin(user_id):
         bot.answer_callback_query(call.id, "❌ اجازه استفاده از این ربات را نداری.", show_alert=True)
         return
@@ -194,22 +236,34 @@ def callbacks(call):
     # انتخاب نماد
     if data.startswith("sym:"):
         user_state[chat_id]["symbol"] = data.split(":")[1]
-        bot.answer_callback_query(call.id, "نماد انتخاب شد")
+        bot.answer_callback_query(call.id, "نماد انتخاب شد ✅")
         ask_tp1(chat_id)
 
     # جهت
     elif data.startswith("dir:"):
         user_state[chat_id]["direction"] = data.split(":")[1]
-        bot.answer_callback_query(call.id, "جهت انتخاب شد")
+        bot.answer_callback_query(call.id, "جهت انتخاب شد ✅")
         ask_risk(chat_id)
 
     # ریسک
     elif data.startswith("risk:"):
         user_state[chat_id]["risk"] = data.split(":")[1]
-        bot.answer_callback_query(call.id, "ریسک انتخاب شد")
+        bot.answer_callback_query(call.id, "ریسک انتخاب شد ✅")
+        # حالا می‌پرسیم با عکس / بی‌عکس
+        ask_with_image(chat_id)
 
-        # دیگه متن طولانی نمی‌فرستیم، مستقیم مقصد را می‌پرسیم
-        ask_destination(chat_id)
+    # انتخاب با عکس / بی‌عکس
+    elif data.startswith("img:"):
+        flag = data.split(":")[1]
+        user_state[chat_id]["with_image"] = (flag == "yes")
+        bot.answer_callback_query(call.id, "نوع ارسال انتخاب شد ✅")
+
+        if flag == "yes":
+            # باید عکس بفرسته
+            ask_photo(chat_id)
+        else:
+            # بدون عکس، مستقیم مقصد را بپرس
+            ask_destination(chat_id)
 
     # مقصد
     elif data.startswith("dest:"):
@@ -218,15 +272,33 @@ def callbacks(call):
         keyboard = build_signal_keyboard(sig_data)
         title = "📊 سیگنال جدید"
 
+        photo_file_id = sig_data.get("photo_file_id")
+        with_image = bool(photo_file_id) and sig_data.get("with_image", False)
+
+        def send_to(target_chat_id):
+            if with_image:
+                bot.send_photo(
+                    target_chat_id,
+                    photo_file_id,
+                    caption=title,
+                    reply_markup=keyboard,
+                )
+            else:
+                bot.send_message(
+                    target_chat_id,
+                    title,
+                    reply_markup=keyboard,
+                )
+
         if which == "here":
-            bot.send_message(chat_id, title, reply_markup=keyboard)
+            send_to(chat_id)
         elif which == "ch1":
-            bot.send_message(CHANNEL_1_ID, title, reply_markup=keyboard)
+            send_to(CHANNEL_1_ID)
         elif which == "ch2":
-            bot.send_message(CHANNEL_2_ID, title, reply_markup=keyboard)
+            send_to(CHANNEL_2_ID)
         elif which == "both":
-            bot.send_message(CHANNEL_1_ID, title, reply_markup=keyboard)
-            bot.send_message(CHANNEL_2_ID, title, reply_markup=keyboard)
+            send_to(CHANNEL_1_ID)
+            send_to(CHANNEL_2_ID)
 
         bot.answer_callback_query(call.id, "سیگنال ارسال شد ✅")
         bot.send_message(chat_id, "سیگنال به مقصد انتخابی ارسال شد ✅")
