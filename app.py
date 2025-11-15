@@ -3,12 +3,20 @@ from flask import Flask, request
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ====== تنظیم متغیرها ======
+# ====== تنظیم متغیرها از ENV ======
 BOT1_TOKEN = os.getenv("BOT1_TOKEN")
 BOT1_WEBHOOK_SECRET = os.getenv("BOT1_WEBHOOK_SECRET", "bot1secret123")
 
 CHANNEL_1_ID = int(os.getenv("CHANNEL_1_ID", "-1001111111111"))  # VIP
 CHANNEL_2_ID = int(os.getenv("CHANNEL_2_ID", "-1002222222222"))  # General
+
+# ====== ادمین‌ها (فقط این دو نفر اجازه ساخت سیگنال دارند) ======
+ADMINS = [526350575, 7706851494]  # Hadi, Sepi
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMINS
+
 
 bot = telebot.TeleBot(BOT1_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
@@ -21,6 +29,12 @@ user_state = {}   # chat_id → dict
 @bot.message_handler(commands=["start"])
 def start(message):
     chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
+        bot.send_message(chat_id, "❌ شما اجازه استفاده از این ربات را ندارید.")
+        return
+
     print(f"START from {chat_id}")
     user_state[chat_id] = {}
     ask_symbol(chat_id)
@@ -41,6 +55,10 @@ def ask_tp1(chat_id):
 
 
 def process_tp1(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
     chat_id = message.chat.id
     user_state.setdefault(chat_id, {})
     user_state[chat_id]["tp1"] = message.text.strip()
@@ -49,6 +67,10 @@ def process_tp1(message):
 
 
 def process_tp2(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
     chat_id = message.chat.id
     user_state[chat_id]["tp2"] = message.text.strip()
     msg = bot.send_message(chat_id, "TP3 را وارد کن:")
@@ -56,6 +78,10 @@ def process_tp2(message):
 
 
 def process_tp3(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
     chat_id = message.chat.id
     user_state[chat_id]["tp3"] = message.text.strip()
     msg = bot.send_message(chat_id, "Stop Loss را وارد کن:")
@@ -63,6 +89,10 @@ def process_tp3(message):
 
 
 def process_stop(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
     chat_id = message.chat.id
     user_state[chat_id]["stop"] = message.text.strip()
 
@@ -83,28 +113,10 @@ def ask_risk(chat_id):
     bot.send_message(chat_id, "ریسک را انتخاب کن:", reply_markup=markup)
 
 
-# ====== ساخت متن برای چت خصوصی ======
-def build_signal_text(data):
-    direction = "BUY / LONG" if data["direction"] == "buy" else "SELL / SHORT"
-    risk = "High Risk" if data["risk"] == "high" else "Low Risk"
-
-    return (
-        "📊 <b>سیگنال جدید</b>\n\n"
-        f"💎 <b>Symbol:</b> {data['symbol']}\n"
-        f"💎 <b>Direction:</b> {direction}\n"
-        f"💎 <b>Risk:</b> {risk}\n\n"
-        "🎯 <b>Targets</b>\n"
-        f"TP1 → {data['tp1']}\n"
-        f"TP2 → {data['tp2']}\n"
-        f"TP3 → {data['tp3']}\n\n"
-        f"⛔ <b>Stop Loss:</b> {data['stop']}"
-    )
-
-
-# ====== ساخت کیبورد دکمه‌ای برای کانال ======
+# ====== ساخت کیبورد دکمه‌ای برای نمایش سیگنال ======
 def build_signal_keyboard(data):
     """
-    کیبورد دو ستونه:
+    کیبورد دو ستونه فقط برای نمایش:
     [ Symbol ] [ XAUUSD ]
     ...
     دکمه‌ها غیر فعال (callback_data="x")
@@ -164,38 +176,45 @@ def ask_destination(chat_id):
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(call):
     chat_id = call.message.chat.id
+    user_id = call.from_user.id
     data = call.data
 
-    # دکمه‌های نمایش در کانال (x) → هیچ کاری نکنیم
+    # دکمه‌های نمایشی (x) → هیچ کاری نکن (برای همه مجاز، چون فقط ویو هست)
     if data == "x":
         bot.answer_callback_query(call.id)
         return
 
+    # برای بقیه دکمه‌ها فقط ادمین اجازه دارد
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "❌ اجازه استفاده از این ربات را نداری.", show_alert=True)
+        return
+
     user_state.setdefault(chat_id, {})
 
+    # انتخاب نماد
     if data.startswith("sym:"):
         user_state[chat_id]["symbol"] = data.split(":")[1]
         bot.answer_callback_query(call.id, "نماد انتخاب شد")
         ask_tp1(chat_id)
 
+    # جهت
     elif data.startswith("dir:"):
         user_state[chat_id]["direction"] = data.split(":")[1]
         bot.answer_callback_query(call.id, "جهت انتخاب شد")
         ask_risk(chat_id)
 
+    # ریسک
     elif data.startswith("risk:"):
         user_state[chat_id]["risk"] = data.split(":")[1]
         bot.answer_callback_query(call.id, "ریسک انتخاب شد")
 
-        text = build_signal_text(user_state[chat_id])
-        bot.send_message(chat_id, text)
-
+        # دیگه متن طولانی نمی‌فرستیم، مستقیم مقصد را می‌پرسیم
         ask_destination(chat_id)
 
+    # مقصد
     elif data.startswith("dest:"):
         which = data.split(":")[1]
         sig_data = user_state[chat_id]
-
         keyboard = build_signal_keyboard(sig_data)
         title = "📊 سیگنال جدید"
 
@@ -210,7 +229,7 @@ def callbacks(call):
             bot.send_message(CHANNEL_2_ID, title, reply_markup=keyboard)
 
         bot.answer_callback_query(call.id, "سیگنال ارسال شد ✅")
-        bot.send_message(chat_id, "سیگنال ارسال شد ✅")
+        bot.send_message(chat_id, "سیگنال به مقصد انتخابی ارسال شد ✅")
 
 
 # ====== وبهوک ======
@@ -227,7 +246,7 @@ def index():
     return "Signal bot running.", 200
 
 
-# ====== اجرای Flask (برای Koyeb / هر هاست دیگه) ======
+# ====== اجرای Flask ======
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
